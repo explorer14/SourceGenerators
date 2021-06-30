@@ -1,9 +1,9 @@
 ﻿using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
-using System;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Text;
 
 namespace DtoGenerators
 {
@@ -14,16 +14,17 @@ namespace DtoGenerators
         {
             var targetTypeTracker = context.SyntaxContextReceiver as TargetTypeTracker;
             ReportWarningIfReceiverNotFound(context, targetTypeTracker);
+            var codeBuilder = new StringBuilder();
 
             foreach (var typeNode in targetTypeTracker.TypesNeedingDtoGening)
-            {
-                context.AddSource("TypesFound", 
-                    SourceText.From($"// Found {typeNode.Identifier.ValueText}"));
-            }
+                codeBuilder.AppendLine($"// Found {typeNode.Identifier.ValueText}");
+
+            context.AddSource("TypesFound", 
+                SourceText.From(codeBuilder.ToString(), Encoding.UTF8));
         }
 
         private static void ReportWarningIfReceiverNotFound(
-            GeneratorExecutionContext context, 
+            GeneratorExecutionContext context,
             TargetTypeTracker targetTypeTracker)
         {
             if (targetTypeTracker == null)
@@ -38,22 +39,30 @@ namespace DtoGenerators
                         Location.None));
         }
 
-        public void Initialize(GeneratorInitializationContext context) => 
+        public void Initialize(GeneratorInitializationContext context) =>
             context.RegisterForSyntaxNotifications(() => new TargetTypeTracker());
     }
 
-    internal class TargetTypeTracker : ISyntaxContextReceiver
+    public class TargetTypeTracker : ISyntaxContextReceiver
     {
         public IImmutableList<TypeDeclarationSyntax> TypesNeedingDtoGening =
             ImmutableList.Create<TypeDeclarationSyntax>();
 
         public void OnVisitSyntaxNode(GeneratorSyntaxContext context)
         {
-            var symbol = context.SemanticModel.GetDeclaredSymbol(context.Node);
-
-            if ((symbol as ITypeSymbol).GetAttributes()
-                .Count(x=>$"{x.AttributeClass.Name}Attribute" == nameof(GenerateMappedDtoAttribute)) > 0)
-                TypesNeedingDtoGening = TypesNeedingDtoGening.Add(context.Node as TypeDeclarationSyntax);
+            if (context.Node is TypeDeclarationSyntax cdecl)
+                if (cdecl.IsDecoratedWithAttribute("generatemappeddto"))
+                    TypesNeedingDtoGening = TypesNeedingDtoGening.Add(
+                        context.Node as TypeDeclarationSyntax);
         }
+    }
+
+    internal static class SourceGenExtns
+    {
+        internal static bool IsDecoratedWithAttribute(
+            this TypeDeclarationSyntax cdecl, string attributeName) =>
+            cdecl.AttributeLists
+                .SelectMany(x => x.Attributes)
+                .Any(x => x.Name.ToString().ToLower() == attributeName);
     }
 }
