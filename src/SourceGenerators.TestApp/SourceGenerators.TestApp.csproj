@@ -7,7 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="DtoGenerators" Version="1.0.0-preview12" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <PackageReference Include="DtoGenerators" Version="1.0.0-preview1" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

@@ -1,4 +1,8 @@
-var target = Argument("target", "Test");
+#addin nuget:?package=Cake.SemVer&version=4.0.0
+#addin nuget:?package=semver&version=2.0.4
+#addin nuget:?package=Cake.FileHelpers&version=3.3.0
+
+var target = Argument("target", "Build");
 var configuration = Argument("configuration", "Release");
 var artifactDirPath = "./artifacts/";
 var packagePublishDirPath = "./publish/";
@@ -39,7 +43,7 @@ void SetUpNuget()
 Task("Build")    
     .Does(() =>
 {
-    DotNetCoreBuild("./SourceGenerators.sln", new DotNetCoreBuildSettings
+    DotNetCoreBuild("./src/DtoGenerators/DtoGenerators.csproj", new DotNetCoreBuildSettings
     {
         Configuration = configuration,
     });
@@ -49,11 +53,11 @@ Task("Test")
     .IsDependentOn("Build")
     .Does(() =>
 {
-    DotNetCoreTest("./SourceGenerators.sln", new DotNetCoreTestSettings
-    {
-        Configuration = configuration,
-        NoBuild = true,
-    });
+    // DotNetCoreTest("./SourceGenerators.sln", new DotNetCoreTestSettings
+    // {
+    //     Configuration = configuration,
+    //     NoBuild = true,
+    // });
 });
 
 Task("PushToNuget")
