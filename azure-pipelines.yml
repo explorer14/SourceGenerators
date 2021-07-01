@@ -5,7 +5,7 @@ pool:
   vmImage: 'windows-latest'
 
 variables:
-  - group: 'cicdapp-variable-groups'
+  - group: 'Library Common Vars'
 
 steps:
   - task: PowerShell@2
