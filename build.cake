@@ -1,6 +1,4 @@
-#addin nuget:?package=Cake.SemVer&version=4.0.0
-#addin nuget:?package=semver&version=2.0.4
-#addin nuget:?package=Cake.FileHelpers&version=3.3.0
+#addin nuget:?package=Cake.FileHelpers&version=4.0.1
 #tool nuget:?package=NuGet.CommandLine&version=5.9.1
 
 var target = Argument("target", "Build");
