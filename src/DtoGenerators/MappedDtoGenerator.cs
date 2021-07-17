@@ -263,19 +263,19 @@ namespace DtoGenerators
             this INamedTypeSymbol namedType,
             PropertyDeclarationSyntax pds)
         {
-            var typeArgNodes = pds.DescendantNodes().OfType<TypeArgumentListSyntax>();
+            var gns = pds.DescendantNodes()
+                .OfType<GenericNameSyntax>();
+            var typeArgNodes = gns.First().TypeArgumentList;            
+
             var dtoTypeNameList = new List<string>();
 
-            foreach (var node in typeArgNodes)
+            foreach (var node in typeArgNodes.Arguments)
             {
-                foreach (var child in node.DescendantNodes())
-                {
-                    if (child is PredefinedTypeSyntax pts)
-                        dtoTypeNameList.Add($"{pts.Keyword.ValueText}");
+                if (node is PredefinedTypeSyntax pts)
+                    dtoTypeNameList.Add($"{pts.Keyword.ValueText}");
 
-                    if (child is IdentifierNameSyntax ins)
-                        dtoTypeNameList.Add($"{ins.Identifier.ValueText}Dto");
-                }
+                if (node is IdentifierNameSyntax ins)
+                    dtoTypeNameList.Add($"{ins.Identifier.ValueText}Dto");
             }
 
             return @$"{namedType.Name}<{string.Join(",", dtoTypeNameList)}>";
