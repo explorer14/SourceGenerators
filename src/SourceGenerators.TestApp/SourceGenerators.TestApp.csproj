@@ -7,7 +7,15 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="DtoGenerators" Version="1.0.0-preview1" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <Compile Include="..\DtoGenerators\GenerateMappedDtoAttribute.cs" Link="GenerateMappedDtoAttribute.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DtoGenerators\DtoGenerators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

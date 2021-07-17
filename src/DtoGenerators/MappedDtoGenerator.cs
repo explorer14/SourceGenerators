@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.Text;
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 
@@ -14,30 +15,161 @@ namespace DtoGenerators
     {
         public void Execute(GeneratorExecutionContext context)
         {
+            var timer = Stopwatch.StartNew();
             var targetTypeTracker = context.SyntaxContextReceiver as TargetTypeTracker;
-            ReportWarningIfReceiverNotFound(context, targetTypeTracker);
             var codeBuilder = new StringBuilder();
 
             foreach (var typeNode in targetTypeTracker.TypesNeedingDtoGening)
             {
-                var entityClassNamespace = typeNode.ContainingNamespace();
-                var generatedDtoClassName = $"{typeNode.Identifier.ValueText}Dto";
+                var typeNodeSymbol = context.Compilation
+                    .GetSemanticModel(typeNode.SyntaxTree)
+                    .GetDeclaredSymbol(typeNode);
 
-                AddUsings(codeBuilder, entityClassNamespace);
-                AddAutoGenComment(codeBuilder);
-                AddStartNamespace(codeBuilder, entityClassNamespace);
-                AddStartContainerType(codeBuilder, generatedDtoClassName);
-                AddContainerTypeMembers(codeBuilder, typeNode, context.Compilation);
-                AddEndContainerType(codeBuilder);
-                AddEntityToDtoConversionExtensionMethods(
-                    codeBuilder, typeNode, 
-                    generatedDtoClassName, context.Compilation);
-                AddEndNamespace(codeBuilder);
+                var entityClassNamespace = typeNodeSymbol.ContainingNamespace?.ToDisplayString()
+                    ?? "NoNamespace";
+
+                var generatedDtoClassName = $"{typeNodeSymbol.Name}Dto";
+
+                codeBuilder.AppendLine("using System;");
+                codeBuilder.AppendLine("using System.Collections.Generic;");
+                codeBuilder.AppendLine("using System.Linq;");
+                codeBuilder.AppendLine($"using {entityClassNamespace};");
+
+                codeBuilder.AppendLine($"namespace {entityClassNamespace}.Dtos");
+                codeBuilder.AppendLine("{");
+
+                codeBuilder.AppendLine($"\tpublic class {generatedDtoClassName}");
+                codeBuilder.AppendLine("\t{");
+
+                var allProperties = typeNode.Members.OfType<PropertyDeclarationSyntax>();
+
+                foreach (var property in allProperties)
+                    codeBuilder.AppendLine($"\t\t{property.BuildDtoProperty(context.Compilation)}");
+
+                codeBuilder.AppendLine("\t}");
+
+                codeBuilder.AppendLine($"\tpublic static class EntityExtensions{Guid.NewGuid().ToString().Replace("-", string.Empty)}");
+                codeBuilder.AppendLine("\t{");
+                codeBuilder.AppendLine($"\t\tpublic static {generatedDtoClassName} ToDto(this {typeNode.Identifier.ValueText} entity)");
+                codeBuilder.AppendLine("\t\t{");
+                codeBuilder.AppendLine($"\t\t\t\treturn new {generatedDtoClassName}");
+                codeBuilder.AppendLine($"\t\t\t\t{{");
+
+                var propertiesWithCollectionTypes =
+                    new List<(IPropertySymbol Symbol, PropertyDeclarationSyntax Syntax)>();
+
+                foreach (var pds in allProperties)
+                {
+                    var symbol = context.Compilation
+                             .GetSemanticModel(pds.SyntaxTree)
+                             .GetDeclaredSymbol(pds);
+                    var property = (symbol as IPropertySymbol);
+                    var propertyType = property.Type as INamedTypeSymbol;
+
+                    if (propertyType?.IsGenericType ?? false)
+                    {
+                        if (propertyType.TypeArguments.All(x => x.TypeKind != TypeKind.Class && x.TypeKind != TypeKind.Struct))
+                            codeBuilder.AppendLine($"\t\t\t\t\t{property.Name} = entity.{property.Name},");
+                        else
+                        {
+                            codeBuilder.AppendLine($"\t\t\t\t\t{property.Name} = entity.{property.Name}.ToDto(),");
+                            propertiesWithCollectionTypes.Add((property, pds));
+                        }
+                    }
+                    else
+                    {
+                        if (property.Type.TypeKind == TypeKind.Array)
+                        {
+                            var elementTypeSymbol = property.Type as IArrayTypeSymbol;
+
+                            if ((elementTypeSymbol.ElementType.IsClass() ||
+                                elementTypeSymbol.ElementType.IsStruct()) &&
+                                property.IsPropertyTypeCustom())
+                            {
+                                codeBuilder.AppendLine($"\t\t\t\t\t{property.Name} = " +
+                                    $"entity.{property.Name}.ToDto(),");
+                                propertiesWithCollectionTypes.Add((property, pds));
+                            }
+                            else
+                                codeBuilder.AppendLine($"\t\t\t\t\t{property.Name} = entity.{property.Name},");
+                        }
+                        else
+                        {
+                            if (property.IsOfTypeClass() || property.IsOfTypeStruct())
+                            {
+                                if (property.Type.NullableAnnotation == NullableAnnotation.Annotated)
+                                    codeBuilder.AppendLine($"\t\t\t\t\t{property.Name} = entity.{property.Name}?.ToDto() ?? null,");
+                                else
+                                    codeBuilder.AppendLine($"\t\t\t\t\t{property.Name} = entity.{property.Name}.ToDto(),");
+                            }
+                            else
+                                codeBuilder.AppendLine($"\t\t\t\t\t{property.Name} = entity.{property.Name},");
+                        }
+                    }
+                }
+
+                codeBuilder.AppendLine($"\t\t\t\t}};");
+                codeBuilder.AppendLine("\t\t}");
+                codeBuilder.AppendLine("\t}");
+
+                foreach (var property in propertiesWithCollectionTypes)
+                {
+                    var namedType = property.Symbol.Type as INamedTypeSymbol;
+                    codeBuilder.AppendLine($"\tpublic static class " +
+                        $"EntityExtensions{Guid.NewGuid().ToString().Replace("-", string.Empty)}");
+                    codeBuilder.AppendLine("\t{");
+
+                    if (namedType?.IsGenericType ?? false)
+                    {
+                        codeBuilder.AppendLine($"\t\tpublic static " +
+                            $"{namedType.BuildDtoTypeWithGenericTypeArgs(property.Syntax)} " +
+                            $"ToDto(this {namedType.Name()} entities)");
+
+                        if (namedType.IsDictionary())
+                        {
+                            codeBuilder.AppendLine("\t\t{");
+                            codeBuilder.AppendLine($"\t\t\t if (entities == null) " +
+                                $"return new {namedType.BuildDtoTypeWithGenericTypeArgs(property.Syntax)}();");
+                            codeBuilder.AppendLine("\t\t\t return null; //🤷‍♂️");
+                            codeBuilder.AppendLine("\t\t}");
+                        }
+                        else
+                        {
+                            codeBuilder.AppendLine("\t\t{");
+                            codeBuilder.AppendLine($"\t\t\t if (entities == null) " +
+                                $"return Array.Empty<" +
+                                $"{namedType.TypeArguments.First().Name}Dto>();");
+                            codeBuilder.AppendLine("\t\t\t return entities.Select(x => x.ToDto()).ToList();");
+                            codeBuilder.AppendLine("\t\t}");
+                        }
+                    }
+                    else
+                    {
+                        codeBuilder.AppendLine($"\t\tpublic static " +
+                            $"{property.Symbol.Type.Name().Replace("[]", string.Empty)}Dto[] " +
+                            $"ToDto(this {property.Symbol.Type.Name()} entities)");
+                        codeBuilder.AppendLine("\t\t{");
+                        codeBuilder.AppendLine($"\t\t\t if (entities == null) " +
+                            $"return Array.Empty<" +
+                            $"{property.Symbol.Type.Name().Replace("[]", string.Empty)}Dto>();");
+                        codeBuilder.AppendLine("\t\t\t return entities.Select(x => x.ToDto()).ToArray();");
+                        codeBuilder.AppendLine("\t\t}");
+                    }
+
+                    codeBuilder.AppendLine("\t}");
+                }
+
+                codeBuilder.AppendLine("}");
 
                 context.AddSource(generatedDtoClassName,
                     SourceText.From(codeBuilder.ToString(), Encoding.UTF8));
                 codeBuilder.Clear();
             }
+
+            timer.Stop();
+            context.AddSource("PERF",
+                SourceText.From($"// {DateTimeOffset.Now} DTO source generation took {timer.Elapsed}",
+                Encoding.UTF8));
         }
 
         private static void ReportWarningIfReceiverNotFound(
@@ -57,108 +189,7 @@ namespace DtoGenerators
         }
 
         private void AddAutoGenComment(StringBuilder codeBuilder) =>
-            codeBuilder.AppendLine("// Generated by DtoGenerators © Aman Agrawal");
-
-        private static void AddEndNamespace(StringBuilder codeBuilder) => 
-            codeBuilder.AppendLine("}");
-
-        private static void AddEndContainerType(StringBuilder codeBuilder) => 
-            codeBuilder.AppendLine("\t}");
-
-        private static void AddStartContainerType(StringBuilder codeBuilder, string generatedDtoName)
-        {
-            codeBuilder.AppendLine($"\tpublic class {generatedDtoName}");
-            codeBuilder.AppendLine("\t{");
-        }
-
-        private static void AddStartNamespace(StringBuilder codeBuilder, string entityNamespace)
-        {
-            codeBuilder.AppendLine($"namespace {entityNamespace}.Dtos");
-            codeBuilder.AppendLine("{");
-        }
-
-        private static void AddUsings(StringBuilder codeBuilder, string entityNamespace)
-        {
-            codeBuilder.AppendLine("using System;");
-            codeBuilder.AppendLine("using System.Collections.Generic;");
-            codeBuilder.AppendLine("using System.Linq;");
-
-            codeBuilder.AppendLine($"using {entityNamespace};");
-        }
-
-        private static void AddContainerTypeMembers(
-            StringBuilder codeBuilder, 
-            TypeDeclarationSyntax cls, 
-            Compilation compilation)
-        {
-            foreach (var item in cls.Members)
-                if (item is PropertyDeclarationSyntax pds)
-                    codeBuilder.AppendLine($"\t\t{pds.BuildDtoProperty(compilation)}");
-        }
-
-        private static void AddEntityToDtoConversionExtensionMethods(
-            StringBuilder codeBuilder,
-            TypeDeclarationSyntax cls,
-            string generatedDtoName,
-            Compilation compilation)
-        {
-            codeBuilder.AppendLine($"\tpublic static class EntityExtensions{Guid.NewGuid().ToString().Replace("-", string.Empty)}");
-            codeBuilder.AppendLine("\t{");
-            codeBuilder.AppendLine($"\t\tpublic static {generatedDtoName} ToDto(this {cls.Identifier.ValueText} entity)");
-            codeBuilder.AppendLine("\t\t{");
-            codeBuilder.AppendLine($"\t\t\t\treturn new {generatedDtoName}");
-            codeBuilder.AppendLine($"\t\t\t\t{{");
-
-            var propertiesWithGenericTypeArguments = new List<PropertyDeclarationSyntax>();
-
-            foreach (var item in cls.Members)
-            {
-                if (item is PropertyDeclarationSyntax pds)
-                {
-                    if (pds.ChildNodes().Count(x => x is GenericNameSyntax) > 0)
-                    {
-                        var gns = (pds.ChildNodes().Where(x => x is GenericNameSyntax).FirstOrDefault()) as GenericNameSyntax;
-
-                        if (gns.TypeArgumentList.Arguments.All(x => x is PredefinedTypeSyntax))
-                            codeBuilder.AppendLine($"\t\t\t\t\t{pds.Identifier.ValueText} = entity.{ pds.Identifier.ValueText},");
-                        else
-                        {
-                            codeBuilder.AppendLine($"\t\t\t\t\t{pds.Identifier.ValueText} = entity.{ pds.Identifier.ValueText}.ToDto(),");
-                            propertiesWithGenericTypeArguments.Add(pds);
-                        }
-                    }
-                    else
-                    {
-                        var blah = compilation.GetSemanticModel(pds.SyntaxTree).GetDeclaredSymbol(pds);
-                        var propSym = (blah as IPropertySymbol);
-                        if (propSym.IsOfTypeClass() || propSym.IsOfTypeStruct())
-                            codeBuilder.AppendLine($"\t\t\t\t\t{pds.Identifier.ValueText} = entity.{ pds.Identifier.ValueText}.ToDto(),");
-                        else
-                            codeBuilder.AppendLine($"\t\t\t\t\t{pds.Identifier.ValueText} = entity.{ pds.Identifier.ValueText},");
-                    }
-                }
-            }
-
-            codeBuilder.AppendLine($"\t\t\t\t}};");
-            codeBuilder.AppendLine("\t\t}");
-            codeBuilder.AppendLine("\t}");
-
-            // add conversion extensions for generic type properties
-            // this assumes collection type properties. What about scalar properties of complex types?
-            foreach (var property in propertiesWithGenericTypeArguments)
-            {
-                var gns = (property.ChildNodes().Where(x => x is GenericNameSyntax).FirstOrDefault()) as GenericNameSyntax;
-
-                if (gns.TypeArgumentList.Arguments.Any(x => x is not PredefinedTypeSyntax))
-                {
-                    codeBuilder.AppendLine($"\tpublic static class EntityExtensions{Guid.NewGuid().ToString().Replace("-", string.Empty)}");
-                    codeBuilder.AppendLine("\t{");
-                    codeBuilder.AppendLine($"\t\tpublic static {property.GetGenericTypeForDto()} ToDto(this {property.GetGenericTypeForEntity()} entities)");
-                    codeBuilder.AppendLine("\t\t\t=> entities.Select(x=>x.ToDto()).ToList();");
-                    codeBuilder.AppendLine("\t}");
-                }
-            }
-        }
+            codeBuilder.AppendLine("// Generated by DtoGenerators © Aman Agrawal");        
 
         public void Initialize(GeneratorInitializationContext context) =>
             context.RegisterForSyntaxNotifications(() => new TargetTypeTracker());
@@ -186,66 +217,94 @@ namespace DtoGenerators
                 .SelectMany(x => x.Attributes)
                 .Any(x => x.Name.ToString().ToLower() == attributeName);
 
-        internal static string ContainingNamespace(this TypeDeclarationSyntax cdecl) =>
-            (cdecl.Parent as NamespaceDeclarationSyntax)?.Name.ToString() ?? "NoNamespace";
-
-        internal static string BuildDtoProperty(this PropertyDeclarationSyntax pds, Compilation compilation)
+        internal static string BuildDtoProperty(
+            this PropertyDeclarationSyntax pds,
+            Compilation compilation)
         {
-            if (pds.ChildNodes().Count(x => x is GenericNameSyntax) > 0)
+            var symbol = compilation
+                .GetSemanticModel(pds.SyntaxTree)
+                .GetDeclaredSymbol(pds);
+
+            var property = (symbol as IPropertySymbol);
+            var propertyType = property.Type as INamedTypeSymbol;
+
+            if (propertyType?.IsGenericType ?? false)
+                return $"public {propertyType.BuildDtoTypeWithGenericTypeArgs(pds)} {property.Name} {{get; set;}}";
+
+            if (property.Type.TypeKind == TypeKind.Array)
             {
-                var gns = (pds.ChildNodes().Where(x => x is GenericNameSyntax).FirstOrDefault()) as GenericNameSyntax;
-                return $"public {pds.GetGenericTypeForDto()} {pds.Identifier.ValueText} {{get; set;}}";
+                var elementTypeSymbol = property.Type as IArrayTypeSymbol;
+
+                if ((elementTypeSymbol.ElementType.IsClass() ||
+                    elementTypeSymbol.ElementType.IsStruct()) &&
+                    property.IsPropertyTypeCustom())
+                    return $"public {elementTypeSymbol.ElementType.Name()}Dto[] {property.Name} {{get; set;}}";
+                else
+                    return $"public {property.Type.Name()} {property.Name} {{get; set;}}";
+            }
+
+            if (property.IsOfTypeClass() || property.IsOfTypeStruct())
+            {
+                if (property.Type.NullableAnnotation == NullableAnnotation.Annotated)
+                    return $"public {property.Type.Name}Dto? {property.Name} {{get; set;}}";
+
+                return $"public {property.Type.Name}Dto {property.Name} {{get; set;}}";
             }
             else
             {
-                var blah = compilation.GetSemanticModel(pds.SyntaxTree).GetDeclaredSymbol(pds);
-                var propSym = (blah as IPropertySymbol);
+                if (property.Type.NullableAnnotation == NullableAnnotation.Annotated)
+                    return $"public {property.Type.Name}? {property.Name} {{get; set;}}";
 
-                if (propSym.IsOfTypeClass() || propSym.IsOfTypeStruct())
-                {
-                    return $"public {pds.Type}Dto {pds.Identifier.ValueText} {{get; set;}}";
-                }
-                else
-                {
-                    return $"public {pds.Type} {pds.Identifier.ValueText} {{get; set;}}";
-                }
+                return $"public {property.Type.ToDisplayString()} {property.Name} {{get; set;}}";
             }
         }
 
-        internal static string GetGenericTypeForDto(this PropertyDeclarationSyntax pds)
+        internal static string BuildDtoTypeWithGenericTypeArgs(
+            this INamedTypeSymbol namedType,
+            PropertyDeclarationSyntax pds)
         {
-            var gns = (pds.ChildNodes().Where(x => x is GenericNameSyntax).FirstOrDefault()) as GenericNameSyntax;
+            var typeArgNodes = pds.DescendantNodes().OfType<TypeArgumentListSyntax>();
+            var dtoTypeNameList = new List<string>();
 
-            var argumentListCsv = string.Empty;
-
-            foreach (var arg in gns.TypeArgumentList.Arguments)
+            foreach (var node in typeArgNodes)
             {
-                if (arg is PredefinedTypeSyntax pts)
-                    argumentListCsv = string.Join(",", argumentListCsv, pts.ToString());
-                else
-                    argumentListCsv = string.Join(",", argumentListCsv, $"{arg}Dto");
+                foreach (var child in node.DescendantNodes())
+                {
+                    if (child is PredefinedTypeSyntax pts)
+                        dtoTypeNameList.Add($"{pts.Keyword.ValueText}");
+
+                    if (child is IdentifierNameSyntax ins)
+                        dtoTypeNameList.Add($"{ins.Identifier.ValueText}Dto");
+                }
             }
 
-            return $"{gns.Identifier.ValueText}<{argumentListCsv.TrimStart(',')}>";
+            return @$"{namedType.Name}<{string.Join(",", dtoTypeNameList)}>";
         }
 
-        internal static string GetGenericTypeForEntity(this PropertyDeclarationSyntax pds)
-        {
-            var gns = (pds.ChildNodes().Where(x => x is GenericNameSyntax).FirstOrDefault()) as GenericNameSyntax;
-
-            return $"{gns.Identifier.ValueText}<{string.Join(",", gns.TypeArgumentList.Arguments.Select(x => $"{x}"))}>";
-        }
 
         internal static bool IsOfTypeClass(this IPropertySymbol propSym) =>
-            propSym.Type.BaseType.ToDisplayString() == "object" &&
-            propSym.Type.IsReferenceType &&
-            propSym.Type.TypeKind == TypeKind.Class &&
-            propSym.Type.ToDisplayString() != "string" &&
-            propSym.Type.ToDisplayString().StartsWith(propSym.ContainingNamespace.ToDisplayString());
+            propSym.Type.IsClass() &&
+            propSym.IsPropertyTypeCustom();
 
         internal static bool IsOfTypeStruct(this IPropertySymbol propSym) =>
-            propSym.Type.IsValueType &&
-            propSym.Type.TypeKind == TypeKind.Struct &&
-            propSym.Type.ToDisplayString().StartsWith(propSym.ContainingNamespace.ToDisplayString());
+            propSym.Type.IsStruct() &&
+            propSym.IsPropertyTypeCustom();
+
+        internal static bool IsPropertyTypeCustom(this IPropertySymbol property) =>
+            property.Type.ToDisplayString().StartsWith(
+                property.ContainingNamespace.ToDisplayString());
+
+        internal static bool IsClass(this ITypeSymbol namedType) =>
+            namedType.IsReferenceType && namedType.TypeKind == TypeKind.Class;
+
+        internal static bool IsStruct(this ITypeSymbol namedType) =>
+            namedType.IsValueType && namedType.TypeKind == TypeKind.Struct;
+
+        internal static string Name(this ITypeSymbol typeSymbol) =>
+            typeSymbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+
+        internal static bool IsDictionary(this INamedTypeSymbol namedTypeSymbol) =>
+            namedTypeSymbol.ConstructedFrom.Name.Contains("Dictionary");
+
     }
 }
