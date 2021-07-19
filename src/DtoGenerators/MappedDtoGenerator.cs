@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 
+#nullable enable
 namespace DtoGenerators
 {
     [Generator]
@@ -33,6 +34,8 @@ namespace DtoGenerators
                 codeBuilder.AppendLine("using System;");
                 codeBuilder.AppendLine("using System.Collections.Generic;");
                 codeBuilder.AppendLine("using System.Linq;");
+                codeBuilder.AppendLine("using System.Collections.Immutable;");
+                codeBuilder.AppendLine("using System.Collections.Concurrent;");
                 codeBuilder.AppendLine($"using {entityClassNamespace};");
 
                 codeBuilder.AppendLine($"namespace {entityClassNamespace}.Dtos");
@@ -68,13 +71,13 @@ namespace DtoGenerators
 
                     if (propertyType?.IsGenericType ?? false)
                     {
-                        if (propertyType.TypeArguments.All(x => x.TypeKind != TypeKind.Class && x.TypeKind != TypeKind.Struct))
-                            codeBuilder.AppendLine($"\t\t\t\t\t{property.Name} = entity.{property.Name},");
-                        else
+                        if (property.IsAtleastOneTypeArgumentCustomType())
                         {
                             codeBuilder.AppendLine($"\t\t\t\t\t{property.Name} = entity.{property.Name}.ToDto(),");
                             propertiesWithCollectionTypes.Add((property, pds));
                         }
+                        else
+                            codeBuilder.AppendLine($"\t\t\t\t\t{property.Name} = entity.{property.Name},");
                     }
                     else
                     {
@@ -112,9 +115,9 @@ namespace DtoGenerators
                 codeBuilder.AppendLine("\t\t}");
                 codeBuilder.AppendLine("\t}");
 
-                foreach (var property in propertiesWithCollectionTypes)
+                foreach (var propertyTuple in propertiesWithCollectionTypes)
                 {
-                    var namedType = property.Symbol.Type as INamedTypeSymbol;
+                    var namedType = propertyTuple.Symbol.Type as INamedTypeSymbol;
                     codeBuilder.AppendLine($"\tpublic static class " +
                         $"EntityExtensions{Guid.NewGuid().ToString().Replace("-", string.Empty)}");
                     codeBuilder.AppendLine("\t{");
@@ -122,14 +125,14 @@ namespace DtoGenerators
                     if (namedType?.IsGenericType ?? false)
                     {
                         codeBuilder.AppendLine($"\t\tpublic static " +
-                            $"{namedType.BuildDtoTypeWithGenericTypeArgs(property.Syntax)} " +
+                            $"{namedType.BuildDtoTypeWithGenericTypeArgs(propertyTuple.Syntax, propertyTuple.Symbol)} " +
                             $"ToDto(this {namedType.Name()} entities)");
 
                         if (namedType.IsDictionary())
                         {
                             codeBuilder.AppendLine("\t\t{");
                             codeBuilder.AppendLine($"\t\t\t if (entities == null) " +
-                                $"return new {namedType.BuildDtoTypeWithGenericTypeArgs(property.Syntax)}();");
+                                $"return new {namedType.BuildDtoTypeWithGenericTypeArgs(propertyTuple.Syntax, propertyTuple.Symbol)}();");
                             codeBuilder.AppendLine("\t\t\t return null; //🤷‍♂️");
                             codeBuilder.AppendLine("\t\t}");
                         }
@@ -146,12 +149,12 @@ namespace DtoGenerators
                     else
                     {
                         codeBuilder.AppendLine($"\t\tpublic static " +
-                            $"{property.Symbol.Type.Name().Replace("[]", string.Empty)}Dto[] " +
-                            $"ToDto(this {property.Symbol.Type.Name()} entities)");
+                            $"{propertyTuple.Symbol.Type.Name().Replace("[]", string.Empty)}Dto[] " +
+                            $"ToDto(this {propertyTuple.Symbol.Type.Name()} entities)");
                         codeBuilder.AppendLine("\t\t{");
                         codeBuilder.AppendLine($"\t\t\t if (entities == null) " +
                             $"return Array.Empty<" +
-                            $"{property.Symbol.Type.Name().Replace("[]", string.Empty)}Dto>();");
+                            $"{propertyTuple.Symbol.Type.Name().Replace("[]", string.Empty)}Dto>();");
                         codeBuilder.AppendLine("\t\t\t return entities.Select(x => x.ToDto()).ToArray();");
                         codeBuilder.AppendLine("\t\t}");
                     }
@@ -229,7 +232,7 @@ namespace DtoGenerators
             var propertyType = property.Type as INamedTypeSymbol;
 
             if (propertyType?.IsGenericType ?? false)
-                return $"public {propertyType.BuildDtoTypeWithGenericTypeArgs(pds)} {property.Name} {{get; set;}}";
+                return $"public {propertyType.BuildDtoTypeWithGenericTypeArgs(pds, property)} {property.Name} {{get; set;}}";
 
             if (property.Type.TypeKind == TypeKind.Array)
             {
@@ -248,39 +251,58 @@ namespace DtoGenerators
                 if (property.Type.NullableAnnotation == NullableAnnotation.Annotated)
                     return $"public {property.Type.Name}Dto? {property.Name} {{get; set;}}";
 
-                return $"public {property.Type.Name}Dto {property.Name} {{get; set;}}";
+                return $"public {property.Type.Name()}Dto {property.Name} {{get; set;}}";
             }
             else
             {
                 if (property.Type.NullableAnnotation == NullableAnnotation.Annotated)
-                    return $"public {property.Type.Name}? {property.Name} {{get; set;}}";
+                    return $"public {property.Type.Name()}? {property.Name} {{get; set;}}";
 
-                return $"public {property.Type.ToDisplayString()} {property.Name} {{get; set;}}";
+                return $"public {property.Type.Name()} {property.Name} {{get; set;}}";
             }
         }
 
         internal static string BuildDtoTypeWithGenericTypeArgs(
             this INamedTypeSymbol namedType,
-            PropertyDeclarationSyntax pds)
+            PropertyDeclarationSyntax pds,
+            IPropertySymbol property)
         {
             var gns = pds.DescendantNodes()
                 .OfType<GenericNameSyntax>();
-            var typeArgNodes = gns.First().TypeArgumentList;            
+            var typeArgNodes = gns.First().TypeArgumentList;
 
             var dtoTypeNameList = new List<string>();
 
             foreach (var node in typeArgNodes.Arguments)
             {
-                if (node is PredefinedTypeSyntax pts)
-                    dtoTypeNameList.Add($"{pts.Keyword.ValueText}");
+                var typeName = BuildTypeName(node, property);
 
-                if (node is IdentifierNameSyntax ins)
-                    dtoTypeNameList.Add($"{ins.Identifier.ValueText}Dto");
+                if (typeName!=null)
+                    dtoTypeNameList.Add($"{typeName}");
             }
 
             return @$"{namedType.Name}<{string.Join(",", dtoTypeNameList)}>";
         }
 
+        private static string? BuildTypeName(TypeSyntax node, IPropertySymbol property)
+        {
+            if (node is IdentifierNameSyntax ins)
+            {
+                var namedType = property.Type as INamedTypeSymbol;
+                var typeArg = namedType!.TypeArguments
+                    .First(x=>x.Name == ins.Identifier.ValueText);
+
+                if (property.IsPropertyTypeCustom(typeArg))
+                    return $"{ins.Identifier.ValueText}Dto";
+
+                return $"{ins.Identifier.ValueText}";
+            }
+                
+            if (node is PredefinedTypeSyntax pts)
+                return $"{pts.Keyword.ValueText}";
+
+            return default;
+        }
 
         internal static bool IsOfTypeClass(this IPropertySymbol propSym) =>
             propSym.Type.IsClass() &&
@@ -291,7 +313,11 @@ namespace DtoGenerators
             propSym.IsPropertyTypeCustom();
 
         internal static bool IsPropertyTypeCustom(this IPropertySymbol property) =>
-            property.Type.ToDisplayString().StartsWith(
+            property.IsPropertyTypeCustom(property.Type);
+
+        internal static bool IsPropertyTypeCustom(this IPropertySymbol property, 
+            ITypeSymbol type) => 
+            type.ToDisplayString().StartsWith(
                 property.ContainingNamespace.ToDisplayString());
 
         internal static bool IsClass(this ITypeSymbol namedType) =>
@@ -306,5 +332,21 @@ namespace DtoGenerators
         internal static bool IsDictionary(this INamedTypeSymbol namedTypeSymbol) =>
             namedTypeSymbol.ConstructedFrom.Name.Contains("Dictionary");
 
+        internal static bool IsAtleastOneTypeArgumentCustomType(
+            this IPropertySymbol property)
+        {
+            var typeArgs = (property.Type as INamedTypeSymbol)!.TypeArguments;
+
+            foreach (var type in typeArgs)
+            {
+                var isCustom = property.IsPropertyTypeCustom(type);
+
+                if (isCustom)
+                    return true;
+            }
+
+            return false;
+        }
     }
 }
+#nullable restore

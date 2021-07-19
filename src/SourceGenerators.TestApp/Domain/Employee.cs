@@ -1,6 +1,7 @@
 ﻿using DtoGenerators;
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 
 namespace SourceGenerators.TestApp.Domain
 {
@@ -36,6 +37,8 @@ namespace SourceGenerators.TestApp.Domain
         public HolidayBalance HolidayBalance { get; }
 
         public Dictionary<int, string> PromotionCodes { get; } = new Dictionary<int, string>();
+
+        public IImmutableList<DateTime> PastSickDaysOff { get; } = ImmutableList.Create<DateTime>();
 
         public void AllocateAsset(CompanyAsset asset)
         {
