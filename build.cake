@@ -23,7 +23,7 @@ void SetUpNuget()
 	{
 	    var nugetSourceSettings = new NuGetSourcesSettings
                              {
-                                 UserName = "skynetcode",
+                                 UserName = "blah",
                                  Password = EnvironmentVariable("SYSTEM_ACCESSTOKEN"),
                                  Verbosity = NuGetVerbosity.Detailed
                              };		
