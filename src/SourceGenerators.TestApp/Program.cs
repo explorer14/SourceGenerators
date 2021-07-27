@@ -16,6 +16,7 @@ namespace SourceGenerators.TestApp
             e.AllocateAsset(new CompanyAsset("ASB", 100, "!@!@#"));
             e.AllocateAsset(new CompanyAsset("DFGHJ", 200, "!@!@#"));
             e.AllocateAsset(new CompanyAsset("@$%Y", 300, "!@!@#"));
+            e.AllocateAsset(new CompanyAsset("sdfasas", 300, "!asd#"));
 
             var dto = e.ToDto();
             Console.WriteLine(JsonConvert.SerializeObject(dto));
